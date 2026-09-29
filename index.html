@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<title>Tanarqui</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0F2A24">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Tanarqui">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="robots" content="noindex, nofollow">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="favicon.png">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0F2A24;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  #top{position:fixed;top:0;left:0;right:0;height:env(safe-area-inset-top,0px);background:#0F2A24}
+  #bottom{position:fixed;bottom:0;left:0;right:0;height:env(safe-area-inset-bottom,0px);background:#fff}
+  #frame{position:fixed;top:env(safe-area-inset-top,0px);bottom:env(safe-area-inset-bottom,0px);left:env(safe-area-inset-left,0px);right:env(safe-area-inset-right,0px)}
+  #frame iframe{border:0;display:block;width:1px;min-width:100%;height:100%;background:#F5F7F8}
+  #splash{position:fixed;inset:0;z-index:3;background:#0F2A24;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;transition:opacity .35s ease}
+  #splash.gone{opacity:0;pointer-events:none}
+  #splash img{width:92px;height:92px;border-radius:21px}
+  #splash h1{font-size:22px;font-weight:800;margin:6px 0 0;letter-spacing:-.01em}
+  #msg{font-size:14px;line-height:1.5;color:#9DBDB4;max-width:300px;min-height:21px}
+  #retry{display:none;margin-top:6px;border:0;border-radius:12px;background:#0E7C66;color:#fff;font:700 15px/1 inherit;padding:14px 24px;cursor:pointer}
+
+  /* pedido de notificações */
+  #sheet{position:fixed;z-index:4;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);max-width:460px;margin:0 auto;
+    background:#fff;color:#16202A;border-radius:18px;padding:16px;box-shadow:0 12px 40px rgba(15,42,36,.35);
+    display:grid;grid-template-columns:44px 1fr;gap:12px;transform:translateY(calc(100% + 40px));transition:transform .3s ease}
+  #sheet.show{transform:none}
+  #sheet img{width:44px;height:44px;border-radius:11px}
+  #sheet b{display:block;font-size:15.5px;margin-bottom:3px}
+  #sheet span{font-size:13px;line-height:1.45;color:#475569}
+  .sh-btns{grid-column:1/-1;display:flex;gap:10px}
+  .sh-btns button{flex:1;border:0;border-radius:11px;font:600 14.5px/1 inherit;padding:13px 10px;cursor:pointer}
+  .sh-btns .no{background:#F1F5F4;color:#16202A}
+  .sh-btns .yes{background:#0E7C66;color:#fff;font-weight:700}
+  #wtoast{position:fixed;z-index:5;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 90px);transform:translateX(-50%);background:#0F2A24;color:#fff;
+    padding:10px 18px;border-radius:20px;font-size:13px;opacity:0;transition:opacity .25s;pointer-events:none;max-width:88%;text-align:center}
+  #wtoast.show{opacity:1}
+  button:focus-visible{outline:3px solid #9DBDB4;outline-offset:3px}
+  @media (prefers-reduced-motion:reduce){#splash,#sheet{transition:none}}
+</style>
+</head>
+<body>
+<div id="top"></div><div id="bottom"></div>
+<div id="frame"></div>
+<div id="splash" role="status">
+  <img src="apple-touch-icon.png" alt="">
+  <h1>Finanças Tanarqui</h1>
+  <div id="msg">A abrir…</div>
+  <button id="retry" type="button" onclick="location.reload()">Tentar de novo</button>
+</div>
+<div id="sheet" role="dialog" aria-labelledby="sh-t" aria-hidden="true">
+  <img src="apple-touch-icon.png" alt="">
+  <div><b id="sh-t">Receber os avisos no telemóvel?</b><span>Renda e prestações a vencer, orçamentos a esgotar e a revisão do mês. No máximo uma notificação por dia.</span></div>
+  <div class="sh-btns"><button type="button" class="no" onclick="snooze()">Agora não</button><button type="button" class="yes" id="sh-yes" onclick="enablePush()">Activar</button></div>
+</div>
+<div id="wtoast"></div>
+<script src="config.js"></script>
+<script>
+const APP_URL = String(window.APP_URL || "").trim();
+const BASE = location.pathname.replace(/[^/]*$/, "");      // ex.: "/tanarqui/"
+const WORKER = "OneSignalSDKWorker.js";
+const $ = id => document.getElementById(id);
+const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
+function fail(text, canRetry) { $("msg").textContent = text; $("retry").style.display = canRetry ? "inline-block" : "none"; }
+function wtoast(t) { const x = $("wtoast"); x.textContent = t; x.classList.add("show"); clearTimeout(wtoast.t); wtoast.t = setTimeout(() => x.classList.remove("show"), 3000); }
+
+/* ---------- abrir a app ---------- */
+(function start() {
+  if (/\/dev(\?|$)/.test(APP_URL)) return fail("Este é o link /dev (só de testes). Usem o link que termina em /exec, em Implementar → Gerir implementações.", false);
+  if (!/^https:\/\/script\.google\.com\/(macros|a\/macros\/[^/]+)\/s\/[^/]+\/exec/.test(APP_URL))
+    return fail("Falta ligar a app. No GitHub, abram o ficheiro config.js e colem o link /exec da vossa app entre as aspas.", false);
+  if (!navigator.onLine) return fail("Sem internet. Os vossos dados estão no Google — liguem os dados móveis ou o Wi-Fi.", true);
+  const f = document.createElement("iframe");
+  f.title = "Finanças Tanarqui";
+  f.src = APP_URL;
+  let loaded = false;
+  f.addEventListener("load", () => { loaded = true; $("splash").classList.add("gone"); });
+  $("frame").appendChild(f);
+  setTimeout(() => { if (!loaded) fail("Está a demorar mais do que o normal. Verifiquem a internet.", true); }, 25000);
+})();
+window.addEventListener("offline", () => { $("splash").classList.remove("gone"); fail("Ficaram sem internet. Quando voltar, toquem em «Tentar de novo».", true); });
+
+/* ---------- notificações (OneSignal) ---------- */
+const PUSH = { appId: "", os: null, err: "", src: null, srcOrigin: "*", hello: false };
+const supported = () => "Notification" in window && "serviceWorker" in navigator && "PushManager" in window;
+const standalone = () => navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
+function pushState() {
+  if (!supported()) return "unsupported";
+  if (PUSH.err) return "error";
+  if (!PUSH.appId) return "noappid";
+  return Notification.permission;                       // default | granted | denied
+}
+function report() {                                     // conta à app como está este telemóvel
+  if (!PUSH.src) return;
+  try { PUSH.src.postMessage({ ft: "wrapper", state: pushState(), err: PUSH.err, url: location.origin + BASE, origin: location.origin, standalone: standalone() }, PUSH.srcOrigin); } catch (e) {}
+}
+function initPush(appId) {
+  if (!/^[0-9a-f-]{36}$/i.test(appId) || PUSH.appId === appId) return;
+  if (PUSH.appId) { store.set("os_app", appId); location.reload(); return; } // mudaram de App ID
+  PUSH.appId = appId; store.set("os_app", appId);
+  if (!supported()) return;
+  window.OneSignalDeferred = window.OneSignalDeferred || [];
+  OneSignalDeferred.push(async function (OneSignal) {
+    try {
+      await OneSignal.init({ appId, serviceWorkerPath: BASE.slice(1) + WORKER, serviceWorkerParam: { scope: BASE }, notifyButton: { enable: false } });
+      PUSH.os = OneSignal;
+      OneSignal.Notifications.addEventListener("permissionChange", () => report());
+      if (Notification.permission === "granted" && !OneSignal.User.PushSubscription.optedIn) await OneSignal.User.PushSubscription.optIn();
+    } catch (e) { PUSH.err = String((e && e.message) || e); }
+    report(); maybeSheet(false);
+  });
+  const s = document.createElement("script");
+  s.src = "https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js"; s.defer = true;
+  s.onerror = () => { PUSH.err = "não foi possível carregar o OneSignal"; report(); };
+  document.head.appendChild(s);
+}
+function maybeSheet(force) {
+  if (pushState() !== "default") { report(); return; }
+  if (!force && (!PUSH.hello || Date.now() < (Number(store.get("os_snooze")) || 0))) return;
+  $("sheet").classList.add("show"); $("sheet").setAttribute("aria-hidden", "false");
+}
+function hideSheet() { $("sheet").classList.remove("show"); $("sheet").setAttribute("aria-hidden", "true"); }
+function snooze() { store.set("os_snooze", String(Date.now() + 7 * 86400000)); hideSheet(); }
+async function enablePush() {                           // tem de começar logo no toque (regra do iPhone)
+  $("sh-yes").disabled = true;
+  let p;
+  try { p = await Notification.requestPermission(); } catch (e) { p = Notification.permission; }
+  if (p === "granted" && PUSH.os) { try { await PUSH.os.User.PushSubscription.optIn(); } catch (e) { PUSH.err = String((e && e.message) || e); } }
+  $("sh-yes").disabled = false; hideSheet(); report();
+  wtoast(p === "granted" ? "Notificações activas ✓" : "Sem autorização. Podem mudar em Definições → Notificações → Tanarqui.");
+}
+window.addEventListener("message", e => {               // só aceita mensagens da vossa app no Google
+  if (!/^https:\/\/[a-z0-9-]+\.googleusercontent\.com$/.test(e.origin)) return;
+  const d = e.data;
+  if (!d || typeof d !== "object") return;
+  PUSH.src = e.source; PUSH.srcOrigin = e.origin;
+  if (d.ft === "hello") { PUSH.hello = true; if (d.appId) initPush(String(d.appId)); report(); maybeSheet(false); }
+  else if (d.ft === "prompt") maybeSheet(true);
+});
+
+const cached = store.get("os_app");
+if (cached) initPush(cached);                           // arranca cedo nas aberturas seguintes
+else if ("serviceWorker" in navigator) navigator.serviceWorker.register(WORKER, { scope: BASE }).catch(() => {});
+</script>
+</body>
+</html>
